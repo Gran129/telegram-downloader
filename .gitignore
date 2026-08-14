@@ -9,5 +9,6 @@ downloads/
 dist/
 build/
 *.egg-info/
+TelegramDownloader-Setup-*.exe
 .idea/
 .vscode/

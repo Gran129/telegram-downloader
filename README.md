@@ -14,6 +14,24 @@
 - 已下载过的文件自动跳过（可断点续下）
 - 进度条显示每个文件
 
+## 图形界面 (GUI，即点即用)
+
+不想用命令行可以用图形界面：
+
+- **已打包版**：从 [Releases](../../releases) 下载 `TelegramDownloader-Setup-*.exe`，安装后从桌面 / 开始菜单打开。
+- **源码运行**：双击 `start-gui.cmd`（首次自动建 venv、装依赖、复制 `.env`），或命令行 `python -m tgdl gui`。
+
+界面里可以：填写 API ID / HASH、登录（手机验证码 / 二次密码会弹窗）、列出频道、下载媒体、以及解析链接（直链 / 磁力 / 种子），日志实时显示在下方。
+
+## 自己打包安装包
+
+详见 [`packaging/README.md`](packaging/README.md)。简述：
+
+- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.0`。
+- 自动发布：把本仓库合并后推送 `v1.3.0` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
+
+> 注意：PyInstaller 不能跨平台编译，Windows 安装包必须在 Windows（本地或 CI）上构建。
+
 ## 环境
 
 - Windows 10/11
@@ -84,6 +102,7 @@ downloads/频道名/videos/
 | 命令 | 作用 |
 |------|------|
 | `python -m tgdl` | 交互菜单 |
+| `python -m tgdl gui` | 图形界面 |
 | `python -m tgdl login` | 登录 |
 | `python -m tgdl list` | 列出频道 |
 | `python -m tgdl download -c ID` | 下载 Telegram 里的图/视频 |

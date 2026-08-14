@@ -1,0 +1,37 @@
+from pathlib import Path
+
+from tgdl import config
+
+
+def test_update_and_read_env_roundtrip(monkeypatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(config, "ENV_PATH", env_path)
+
+    config.update_env(
+        {
+            "api_id": "12345",
+            "api_hash": "deadbeef",
+            "phone": "+15551234567",
+            "download_dir": "./downloads",
+        }
+    )
+    assert env_path.exists()
+
+    values = config.read_env_values()
+    assert values["api_id"] == "12345"
+    assert values["api_hash"] == "deadbeef"
+    assert values["phone"] == "+15551234567"
+    assert values["download_dir"] == "./downloads"
+
+
+def test_update_env_preserves_comments(monkeypatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("# my comment\nTELEGRAM_API_ID=old\nCUSTOM=keep\n", encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_PATH", env_path)
+
+    config.update_env({"api_id": "new", "api_hash": "h", "phone": "", "download_dir": "./d"})
+    text = env_path.read_text(encoding="utf-8")
+    assert "# my comment" in text
+    assert "CUSTOM=keep" in text
+    assert "TELEGRAM_API_ID=new" in text
+    assert "TELEGRAM_API_ID=old" not in text
