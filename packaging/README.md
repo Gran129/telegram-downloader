@@ -14,11 +14,11 @@ PyInstaller 打包 → NSIS 生成安装包 → 上传到 GitHub Release。
 
 ```bash
 # 合并本 PR 到 main 后：
-git tag v1.3.3
-git push origin v1.3.3
+git tag v1.3.4
+git push origin v1.3.4
 ```
 
-几分钟后到仓库 **Releases** 页面即可下载 `TelegramDownloader-Setup-1.3.3.exe`。
+几分钟后到仓库 **Releases** 页面即可下载 `TelegramDownloader-Setup-1.3.4.exe`。
 （也可在 Actions 里手动触发 `workflow_dispatch`，产物在该次运行的 Artifacts 中。）
 
 ### 让发布版内置 api_id/api_hash(终端用户免填,可选)
@@ -35,17 +35,17 @@ CI 会在打包前生成 `tgdl/_defaults.py`(不入库)把凭据内置进 exe;�
 在仓库根目录运行：
 
 ```bat
-packaging\build_windows.cmd 1.3.3
+packaging\build_windows.cmd 1.3.4
 ```
 
-产物 `TelegramDownloader-Setup-1.3.3.exe` 会生成在仓库根目录。
+产物 `TelegramDownloader-Setup-1.3.4.exe` 会生成在仓库根目录。
 
 ## 手动分步（等价）
 
 ```bat
 pip install -r requirements.txt pyinstaller
 pyinstaller --noconfirm packaging\tgdl.spec
-makensis /DVERSION=1.3.3 packaging\installer.nsi
+makensis /DVERSION=1.3.4 packaging\installer.nsi
 ```
 
 - `tgdl.spec`：PyInstaller 配置，产出 `dist\TelegramDownloader\TelegramDownloader.exe`（onedir，无控制台窗口，内嵌图标 + `version_info.txt` 版本信息）。

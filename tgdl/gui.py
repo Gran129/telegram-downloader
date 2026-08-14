@@ -19,6 +19,7 @@ import sys
 import threading
 from pathlib import Path
 
+from tgdl.browser import list_media, save_items
 from tgdl.channels import list_media_dialogs
 from tgdl.client import build_client
 from tgdl.config import (
@@ -29,7 +30,7 @@ from tgdl.config import (
     read_env_values,
     update_env,
 )
-from tgdl.downloader import download_channel
+from tgdl.downloader import download_channel, resolve_channel
 
 from tgdl import downloader as _downloader
 from tgdl import http_fetch as _http_fetch
@@ -174,6 +175,13 @@ class _App:
         self.type_anim = tk.BooleanVar(value=False)
         self.dl_limit = tk.StringVar()
 
+        # gallery state
+        self.g_limit = tk.StringVar(value="60")
+        self.gallery_cells: list = []
+        self._thumb_refs: list = []
+        self._gallery_title = ""
+        self._gallery_entity = None
+
         self.p_no_previews = tk.BooleanVar(value=False)
         self.p_catalog_only = tk.BooleanVar(value=False)
         self.p_no_bt = tk.BooleanVar(value=False)
@@ -252,7 +260,8 @@ class _App:
         # Download / advanced tabs.
         nb = ttk.Notebook(self.root)
         nb.pack(fill="x", **pad)
-        nb.add(self._build_download_tab(), text="下载")
+        nb.add(self._build_gallery_tab(), text="浏览媒体(选图/视频)")
+        nb.add(self._build_download_tab(), text="批量下载")
         nb.add(self._build_parse_tab(), text="解析链接(高级)")
 
         # Download folder row.
@@ -267,6 +276,126 @@ class _App:
         logframe.pack(fill="both", expand=True, **pad)
         self.log = self.scrolledtext.ScrolledText(logframe, height=8, wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True, padx=4, pady=4)
+
+    def _build_gallery_tab(self):
+        tk, ttk = self.tk, self.ttk
+        pad = {"padx": 4, "pady": 4}
+        frame = ttk.Frame(self.root)
+
+        ctrl = ttk.Frame(frame)
+        ctrl.pack(fill="x", **pad)
+        ttk.Label(ctrl, text="加载数量").pack(side="left")
+        ttk.Entry(ctrl, textvariable=self.g_limit, width=6).pack(side="left", padx=4)
+        self.load_gallery_btn = ttk.Button(ctrl, text="加载媒体", command=self.on_load_gallery)
+        self.load_gallery_btn.pack(side="left", padx=4)
+        ttk.Button(ctrl, text="全选", command=lambda: self._gallery_set_all(True)).pack(side="left")
+        ttk.Button(ctrl, text="全不选", command=lambda: self._gallery_set_all(False)).pack(side="left", padx=4)
+        self.save_sel_btn = ttk.Button(ctrl, text="保存所选", command=self.on_save_selected)
+        self.save_sel_btn.pack(side="right")
+        ttk.Label(ctrl, text="(用上面『下载类型』筛选图片/视频)", foreground="#777").pack(side="right", padx=8)
+
+        wrap = ttk.Frame(frame)
+        wrap.pack(fill="both", expand=True, **pad)
+        self.gallery_canvas = tk.Canvas(wrap, height=300, background="#f5f5f5", highlightthickness=0)
+        vbar = ttk.Scrollbar(wrap, orient="vertical", command=self.gallery_canvas.yview)
+        self.gallery_canvas.configure(yscrollcommand=vbar.set)
+        self.gallery_canvas.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="left", fill="y")
+        self.gallery_inner = ttk.Frame(self.gallery_canvas)
+        self.gallery_canvas.create_window((0, 0), window=self.gallery_inner, anchor="nw")
+        self.gallery_inner.bind(
+            "<Configure>",
+            lambda e: self.gallery_canvas.configure(scrollregion=self.gallery_canvas.bbox("all")),
+        )
+        return frame
+
+    def _make_thumb_image(self, thumb: bytes | None):
+        if not thumb:
+            return None
+        try:
+            import io
+
+            from PIL import Image, ImageTk
+
+            image = Image.open(io.BytesIO(thumb))
+            image.thumbnail((130, 130))
+            return ImageTk.PhotoImage(image)
+        except Exception:
+            return None
+
+    def _gallery_set_all(self, value: bool) -> None:
+        for var, _item in self.gallery_cells:
+            var.set(value)
+
+    def _populate_gallery(self, items: list) -> None:
+        for child in self.gallery_inner.winfo_children():
+            child.destroy()
+        self.gallery_cells = []
+        self._thumb_refs = []
+        tk, ttk = self.tk, self.ttk
+        columns = 4
+        for index, item in enumerate(items):
+            row, col = divmod(index, columns)
+            cell = ttk.Frame(self.gallery_inner, relief="groove", borderwidth=1)
+            cell.grid(row=row, column=col, padx=4, pady=4, sticky="n")
+            image = self._make_thumb_image(item.thumb)
+            if image is not None:
+                self._thumb_refs.append(image)
+                thumb_label = ttk.Label(cell, image=image)
+            else:
+                thumb_label = ttk.Label(cell, text=f"[{item.kind}]", width=16, anchor="center")
+            thumb_label.pack(padx=2, pady=2)
+            var = tk.BooleanVar(value=False)
+            caption = f"{item.kind}  #{item.id}"
+            ttk.Checkbutton(cell, text=caption, variable=var).pack()
+            self.gallery_cells.append((var, item))
+        if not items:
+            ttk.Label(self.gallery_inner, text="没有找到媒体。", foreground="#777").grid(row=0, column=0, padx=8, pady=8)
+
+    def on_load_gallery(self) -> None:
+        target = self._selected_target()
+        if not target:
+            self.messagebox.showwarning("未选择", "请先在上面列表里选一个群组/频道,或手动输入。")
+            return
+        limit_raw = self.g_limit.get().strip()
+        types_raw = self._types_string()
+
+        async def coro():
+            await self._ensure_client()
+            entity = await resolve_channel(self.client, target)
+            self._gallery_entity = entity
+            self._gallery_title = (
+                getattr(entity, "title", None) or getattr(entity, "username", None) or str(target)
+            )
+            print(f"正在加载『{self._gallery_title}』的媒体缩略图…")
+            items = await list_media(
+                self.client,
+                entity,
+                limit=int(limit_raw) if limit_raw else 60,
+                types=set(types_raw.split(",")) if types_raw else None,
+            )
+            self.root.after(0, lambda: self._populate_gallery(items))
+            print(f"已加载 {len(items)} 个媒体。勾选要保存的,点『保存所选』。")
+
+        self._run_task(coro(), self.load_gallery_btn)
+
+    def on_save_selected(self) -> None:
+        selected = [item for var, item in self.gallery_cells if var.get()]
+        if not selected:
+            self.messagebox.showwarning("未选择", "请先勾选要保存的图片/视频。")
+            return
+
+        async def coro():
+            await self._ensure_client()
+            await save_items(
+                self.client,
+                selected,
+                download_dir=self.settings.download_dir,
+                title=self._gallery_title or "gallery",
+            )
+            print("保存完成。点『打开下载文件夹』查看。\n")
+
+        self._run_task(coro(), self.save_sel_btn)
 
     def _build_download_tab(self):
         ttk = self.ttk

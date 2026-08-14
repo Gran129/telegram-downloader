@@ -16,11 +16,21 @@
 
 ## 图形界面 (GUI，即点即用)
 
-用起来就像 Telegram 官方客户端:**登录手机号 → 输验证码 → 自动列出你的群组/频道 → 选一个点“下载所选”**。下载目录自动默认到 `下载/TelegramDownloader`,无需填写。
+用起来就像 Telegram 官方客户端:**登录手机号 → 输验证码 → 自动列出你的群组/频道 → 选一个** → 在 **“浏览媒体”** 页像刷聊天一样看缩略图,**勾选想要的图片/视频,点“保存所选”**;也可以在“批量下载”页一次性全下。下载目录自动默认到 `下载/TelegramDownloader`,无需填写。
 
 - **便携版(推荐，最不易被拦)**：从 [Releases](../../releases) 下载 `TelegramDownloader-*-portable-win64.zip`，解压后运行里面的 `TelegramDownloader.exe`。
 - **安装版**：下载 `TelegramDownloader-Setup-*.exe` 安装,从桌面 / 开始菜单打开。
 - **源码运行(零杀软误报)**：双击 `start-gui.cmd`，或命令行 `python -m tgdl gui`。
+
+### 申请 api_id / api_hash 时 my.telegram.org 报错怎么办?
+
+`my.telegram.org` 创建应用时经常弹一个笼统的 `ERROR`,这是它自己的老毛病,常见解决:
+
+- **换浏览器 / 无痕窗口**,或**关掉 VPN/代理**后重试(有时反而需要挂梯子换个地区,两者都试试)。
+- **App title / Short name** 用纯英文、别用特殊字符;URL 之类可留空或随便填 `https://example.com`。
+- 点一次“Create application”若报错,**刷新页面看看其实已经创建**(常常已经生成了 api_id/api_hash)。
+- 登录 `my.telegram.org` 本身要输 Telegram App 收到的验证码;若一直收不到,过几分钟再试。
+- 实在申请不了:可以让**打包版内置**一对凭据(见下一节的 secret 方案),终端用户就不用自己申请。
 
 ### 为什么第一次要填 api_id / api_hash?
 
@@ -47,8 +57,8 @@
 
 详见 [`packaging/README.md`](packaging/README.md)。简述：
 
-- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.3`。
-- 自动发布：把本仓库合并后推送 `v1.3.3` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
+- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.4`。
+- 自动发布：把本仓库合并后推送 `v1.3.4` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
 
 > 注意：PyInstaller 不能跨平台编译，Windows 安装包必须在 Windows（本地或 CI）上构建。
 
