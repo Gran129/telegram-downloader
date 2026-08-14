@@ -1,0 +1,6 @@
+"""PyInstaller entry point for the Telegram Downloader GUI."""
+
+from tgdl.gui import run_gui
+
+if __name__ == "__main__":
+    run_gui()
