@@ -1,30 +1,37 @@
-"""Tkinter GUI for tgdl.
+"""Tkinter GUI for tgdl — a login-first, Telegram-client-like front end.
 
-A point-and-click front end over the existing async functions. The asyncio
-event loop runs in a background thread; the UI submits coroutines to it and
-receives log output through a thread-safe queue. Telethon's interactive
-login (phone code / 2FA password) is wired to modal dialogs.
+Flow mirrors the official client: log in with your phone (code / 2FA in a
+dialog), then your groups/channels are listed automatically; pick one and
+download. api_id/api_hash are only needed once (or baked into the build), and
+the download folder defaults automatically, so there is nothing else to fill.
 
-Tkinter ships with the standard Python installer on Windows, so this needs no
-extra runtime dependency and packages cleanly with PyInstaller.
+The asyncio event loop runs in a background thread; the UI submits coroutines
+to it and receives log output through a thread-safe queue.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import queue
+import subprocess
 import sys
 import threading
 from pathlib import Path
 
-from tgdl import config
+from tgdl.browser import list_media, save_items
 from tgdl.channels import list_media_dialogs
 from tgdl.client import build_client
-from tgdl.config import Settings, load_settings, read_env_values, update_env
-from tgdl.downloader import download_channel
+from tgdl.config import (
+    Settings,
+    credentials_available,
+    default_download_dir,
+    load_settings,
+    read_env_values,
+    update_env,
+)
+from tgdl.downloader import download_channel, resolve_channel
 
-# Patch the progress bars used by the core modules so they do not spam the log
-# console with carriage-return redraws. Import the modules and swap `tqdm`.
 from tgdl import downloader as _downloader
 from tgdl import http_fetch as _http_fetch
 from tgdl import parser as _parser
@@ -66,7 +73,6 @@ def _silence_progress_bars() -> None:
 
 
 def _icon_path() -> Path | None:
-    """Locate the app icon PNG in both source and PyInstaller builds."""
     candidates = []
     if getattr(sys, "frozen", False):
         base = Path(getattr(sys, "_MEIPASS", ""))
@@ -98,8 +104,6 @@ class AsyncLoop:
 
 
 class _QueueWriter:
-    """File-like object that funnels text into a thread-safe queue."""
-
     def __init__(self, sink: "queue.Queue[str]") -> None:
         self._sink = sink
 
@@ -114,9 +118,9 @@ class _QueueWriter:
 
 def run_gui() -> None:
     try:
-        import tkinter as tk
-        from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
-    except Exception as exc:  # pragma: no cover - depends on platform Tk
+        import tkinter as tk  # noqa: F401
+        from tkinter import ttk  # noqa: F401
+    except Exception as exc:  # pragma: no cover - platform dependent
         print(
             "Tkinter is not available. On Debian/Ubuntu install it with:\n"
             "  sudo apt-get install -y python3-tk\n"
@@ -125,29 +129,29 @@ def run_gui() -> None:
         raise SystemExit(1)
 
     _silence_progress_bars()
-
-    app = _App(tk, ttk, scrolledtext, filedialog, messagebox, simpledialog)
-    app.run()
+    _App().run()
 
 
 class _App:
-    def __init__(self, tk, ttk, scrolledtext, filedialog, messagebox, simpledialog) -> None:
+    def __init__(self) -> None:
+        import tkinter as tk
+        from tkinter import messagebox, scrolledtext, simpledialog, ttk
+
         self.tk = tk
         self.ttk = ttk
-        self.filedialog = filedialog
         self.messagebox = messagebox
         self.simpledialog = simpledialog
+        self.scrolledtext = scrolledtext
 
         self.loop = AsyncLoop()
         self.client = None
         self.settings: Settings | None = None
-        self.dialog_map: dict[str, int] = {}
         self.log_queue: "queue.Queue[str]" = queue.Queue()
 
         self.root = tk.Tk()
-        self.root.title("Telegram 下载器 (tgdl)")
-        self.root.geometry("860x680")
-        self.root.minsize(760, 560)
+        self.root.title("Telegram 下载器")
+        self.root.geometry("820x680")
+        self.root.minsize(720, 560)
         self._app_icon = None
         try:
             icon = _icon_path()
@@ -155,40 +159,37 @@ class _App:
                 self._app_icon = tk.PhotoImage(file=str(icon))
                 self.root.iconphoto(True, self._app_icon)
         except Exception:
-            pass  # window icon is cosmetic; never fail the app over it
+            pass
 
         env = read_env_values()
+        self.creds_available = credentials_available()
         self.api_id_var = tk.StringVar(value=env["api_id"])
         self.api_hash_var = tk.StringVar(value=env["api_hash"])
         self.phone_var = tk.StringVar(value=env["phone"])
-        self.download_dir_var = tk.StringVar(value=env["download_dir"])
-        self.channel_var = tk.StringVar()
-        self.status_var = tk.StringVar(value="Not logged in")
+        self.download_dir_var = tk.StringVar(value=env["download_dir"] or str(default_download_dir()))
+        self.status_var = tk.StringVar(value="未登录")
+        self.manual_var = tk.StringVar()
 
-        # download options
         self.type_photo = tk.BooleanVar(value=True)
         self.type_video = tk.BooleanVar(value=True)
         self.type_anim = tk.BooleanVar(value=False)
         self.dl_limit = tk.StringVar()
-        self.dl_since = tk.StringVar()
-        self.dl_until = tk.StringVar()
-        self.dl_no_skip = tk.BooleanVar(value=False)
-        self.dl_dry = tk.BooleanVar(value=False)
 
-        # parse options
-        self.p_limit = tk.StringVar()
-        self.p_since = tk.StringVar()
-        self.p_until = tk.StringVar()
+        # gallery state
+        self.g_limit = tk.StringVar(value="60")
+        self.gallery_cells: list = []
+        self._thumb_refs: list = []
+        self._gallery_title = ""
+        self._gallery_entity = None
+
         self.p_no_previews = tk.BooleanVar(value=False)
         self.p_catalog_only = tk.BooleanVar(value=False)
         self.p_no_bt = tk.BooleanVar(value=False)
-        self.p_http = tk.StringVar(value="3")
-        self.p_bt = tk.StringVar(value="1")
         self.p_dry = tk.BooleanVar(value=False)
+        self.p_limit = tk.StringVar()
 
         self._build_ui()
 
-        # redirect stdout/stderr so tgdl's print()s show in the log console
         self._stdout, self._stderr = sys.stdout, sys.stderr
         writer = _QueueWriter(self.log_queue)
         sys.stdout = writer
@@ -197,118 +198,241 @@ class _App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._drain_log)
 
-    # ---------- UI construction ----------
+    # ---------- UI ----------
     def _build_ui(self) -> None:
         tk, ttk = self.tk, self.ttk
-        pad = {"padx": 6, "pady": 3}
+        pad = {"padx": 6, "pady": 4}
 
-        creds = ttk.LabelFrame(self.root, text="Telegram API (from my.telegram.org)")
-        creds.pack(fill="x", **pad)
-        ttk.Label(creds, text="API ID").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Entry(creds, textvariable=self.api_id_var, width=18).grid(row=0, column=1, sticky="w", **pad)
-        ttk.Label(creds, text="API HASH").grid(row=0, column=2, sticky="w", **pad)
-        ttk.Entry(creds, textvariable=self.api_hash_var, width=40).grid(row=0, column=3, sticky="w", **pad)
-        ttk.Label(creds, text="Phone").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(creds, textvariable=self.phone_var, width=18).grid(row=1, column=1, sticky="w", **pad)
-        ttk.Label(creds, text="Download dir").grid(row=1, column=2, sticky="w", **pad)
-        ttk.Entry(creds, textvariable=self.download_dir_var, width=32).grid(row=1, column=3, sticky="w", **pad)
-        ttk.Button(creds, text="Browse", command=self._choose_dir).grid(row=1, column=4, **pad)
-        self.login_btn = ttk.Button(creds, text="Save & Login", command=self.on_login)
-        self.login_btn.grid(row=0, column=4, **pad)
+        # First-run credentials (only when the app has none yet).
+        if not self.creds_available:
+            setup = ttk.LabelFrame(self.root, text="首次设置(仅一次):Telegram API")
+            setup.pack(fill="x", **pad)
+            msg = (
+                "打开 https://my.telegram.org → API development tools,创建应用,"
+                "把 api_id 和 api_hash 填到这里(只需一次,之后会记住)。"
+            )
+            ttk.Label(setup, text=msg, wraplength=760, foreground="#555").grid(
+                row=0, column=0, columnspan=4, sticky="w", **pad
+            )
+            ttk.Label(setup, text="api_id").grid(row=1, column=0, sticky="w", **pad)
+            ttk.Entry(setup, textvariable=self.api_id_var, width=18).grid(row=1, column=1, sticky="w", **pad)
+            ttk.Label(setup, text="api_hash").grid(row=1, column=2, sticky="w", **pad)
+            ttk.Entry(setup, textvariable=self.api_hash_var, width=40).grid(row=1, column=3, sticky="w", **pad)
+            ttk.Button(setup, text="保存", command=self.on_save_creds).grid(row=1, column=4, **pad)
+            self._setup_frame = setup
 
-        chan = ttk.LabelFrame(self.root, text="Channel")
-        chan.pack(fill="x", **pad)
-        ttk.Label(chan, text="Channel / @user / invite / id").grid(row=0, column=0, sticky="w", **pad)
-        self.channel_combo = ttk.Combobox(chan, textvariable=self.channel_var, width=52)
-        self.channel_combo.grid(row=0, column=1, sticky="we", **pad)
-        self.channel_combo.bind("<<ComboboxSelected>>", self._on_channel_pick)
-        self.list_btn = ttk.Button(chan, text="List my channels", command=self.on_list)
-        self.list_btn.grid(row=0, column=2, **pad)
-        chan.columnconfigure(1, weight=1)
+        # Login row (phone → code, like the official client).
+        login = ttk.LabelFrame(self.root, text="登录")
+        login.pack(fill="x", **pad)
+        ttk.Label(login, text="手机号(带国际区号,可留空登录时再输)").grid(
+            row=0, column=0, sticky="w", **pad
+        )
+        ttk.Entry(login, textvariable=self.phone_var, width=22).grid(row=0, column=1, sticky="w", **pad)
+        self.login_btn = ttk.Button(login, text="登录 Telegram", command=self.on_login)
+        self.login_btn.grid(row=0, column=2, **pad)
+        ttk.Button(login, text="设置", command=self._open_settings).grid(row=0, column=3, **pad)
+        ttk.Label(login, text="状态:").grid(row=0, column=4, sticky="e", **pad)
+        ttk.Label(login, textvariable=self.status_var, foreground="#0a6").grid(row=0, column=5, sticky="w", **pad)
 
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill="x", **pad)
-        notebook.add(self._build_download_tab(), text="Download media")
-        notebook.add(self._build_parse_tab(), text="Parse links (直链/磁力/种子)")
+        # Your chats.
+        chats = ttk.LabelFrame(self.root, text="我的群组 / 频道(登录后自动加载)")
+        chats.pack(fill="both", expand=True, **pad)
+        cols = ("id", "kind", "name")
+        self.tree = ttk.Treeview(chats, columns=cols, show="headings", height=9, selectmode="browse")
+        self.tree.heading("id", text="ID")
+        self.tree.heading("kind", text="类型")
+        self.tree.heading("name", text="名称")
+        self.tree.column("id", width=140, anchor="w")
+        self.tree.column("kind", width=100, anchor="w")
+        self.tree.column("name", width=460, anchor="w")
+        self.tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=6)
+        sb = ttk.Scrollbar(chats, orient="vertical", command=self.tree.yview)
+        sb.pack(side="left", fill="y", pady=6)
+        self.tree.configure(yscrollcommand=sb.set)
 
-        status = ttk.Frame(self.root)
-        status.pack(fill="x", **pad)
-        ttk.Label(status, text="Status:").pack(side="left")
-        ttk.Label(status, textvariable=self.status_var, foreground="#0a6").pack(side="left", padx=6)
+        side = ttk.Frame(chats)
+        side.pack(side="left", fill="y", padx=6, pady=6)
+        self.refresh_btn = ttk.Button(side, text="刷新列表", command=self.on_list)
+        self.refresh_btn.pack(fill="x", pady=2)
+        ttk.Label(side, text="或手动输入\nID/@用户名/邀请链接", foreground="#555").pack(anchor="w", pady=(8, 0))
+        ttk.Entry(side, textvariable=self.manual_var, width=22).pack(fill="x", pady=2)
 
-        logframe = ttk.LabelFrame(self.root, text="Log")
+        # Download / advanced tabs.
+        nb = ttk.Notebook(self.root)
+        nb.pack(fill="x", **pad)
+        nb.add(self._build_gallery_tab(), text="浏览媒体(选图/视频)")
+        nb.add(self._build_download_tab(), text="批量下载")
+        nb.add(self._build_parse_tab(), text="解析链接(高级)")
+
+        # Download folder row.
+        folder = ttk.Frame(self.root)
+        folder.pack(fill="x", **pad)
+        ttk.Label(folder, text="下载到:").pack(side="left")
+        ttk.Label(folder, textvariable=self.download_dir_var, foreground="#333").pack(side="left", padx=6)
+        ttk.Button(folder, text="更改", command=self._change_dir).pack(side="left")
+        ttk.Button(folder, text="打开下载文件夹", command=self._open_folder).pack(side="left", padx=6)
+
+        logframe = ttk.LabelFrame(self.root, text="日志")
         logframe.pack(fill="both", expand=True, **pad)
-        self.log = self.scrolled(logframe)
+        self.log = self.scrolledtext.ScrolledText(logframe, height=8, wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True, padx=4, pady=4)
 
-    def scrolled(self, parent):
-        from tkinter import scrolledtext
+    def _build_gallery_tab(self):
+        tk, ttk = self.tk, self.ttk
+        pad = {"padx": 4, "pady": 4}
+        frame = ttk.Frame(self.root)
 
-        return scrolledtext.ScrolledText(parent, height=16, wrap="word", state="disabled")
+        ctrl = ttk.Frame(frame)
+        ctrl.pack(fill="x", **pad)
+        ttk.Label(ctrl, text="加载数量").pack(side="left")
+        ttk.Entry(ctrl, textvariable=self.g_limit, width=6).pack(side="left", padx=4)
+        self.load_gallery_btn = ttk.Button(ctrl, text="加载媒体", command=self.on_load_gallery)
+        self.load_gallery_btn.pack(side="left", padx=4)
+        ttk.Button(ctrl, text="全选", command=lambda: self._gallery_set_all(True)).pack(side="left")
+        ttk.Button(ctrl, text="全不选", command=lambda: self._gallery_set_all(False)).pack(side="left", padx=4)
+        self.save_sel_btn = ttk.Button(ctrl, text="保存所选", command=self.on_save_selected)
+        self.save_sel_btn.pack(side="right")
+        ttk.Label(ctrl, text="(用上面『下载类型』筛选图片/视频)", foreground="#777").pack(side="right", padx=8)
+
+        wrap = ttk.Frame(frame)
+        wrap.pack(fill="both", expand=True, **pad)
+        self.gallery_canvas = tk.Canvas(wrap, height=300, background="#f5f5f5", highlightthickness=0)
+        vbar = ttk.Scrollbar(wrap, orient="vertical", command=self.gallery_canvas.yview)
+        self.gallery_canvas.configure(yscrollcommand=vbar.set)
+        self.gallery_canvas.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="left", fill="y")
+        self.gallery_inner = ttk.Frame(self.gallery_canvas)
+        self.gallery_canvas.create_window((0, 0), window=self.gallery_inner, anchor="nw")
+        self.gallery_inner.bind(
+            "<Configure>",
+            lambda e: self.gallery_canvas.configure(scrollregion=self.gallery_canvas.bbox("all")),
+        )
+        return frame
+
+    def _make_thumb_image(self, thumb: bytes | None):
+        if not thumb:
+            return None
+        try:
+            import io
+
+            from PIL import Image, ImageTk
+
+            image = Image.open(io.BytesIO(thumb))
+            image.thumbnail((130, 130))
+            return ImageTk.PhotoImage(image)
+        except Exception:
+            return None
+
+    def _gallery_set_all(self, value: bool) -> None:
+        for var, _item in self.gallery_cells:
+            var.set(value)
+
+    def _populate_gallery(self, items: list) -> None:
+        for child in self.gallery_inner.winfo_children():
+            child.destroy()
+        self.gallery_cells = []
+        self._thumb_refs = []
+        tk, ttk = self.tk, self.ttk
+        columns = 4
+        for index, item in enumerate(items):
+            row, col = divmod(index, columns)
+            cell = ttk.Frame(self.gallery_inner, relief="groove", borderwidth=1)
+            cell.grid(row=row, column=col, padx=4, pady=4, sticky="n")
+            image = self._make_thumb_image(item.thumb)
+            if image is not None:
+                self._thumb_refs.append(image)
+                thumb_label = ttk.Label(cell, image=image)
+            else:
+                thumb_label = ttk.Label(cell, text=f"[{item.kind}]", width=16, anchor="center")
+            thumb_label.pack(padx=2, pady=2)
+            var = tk.BooleanVar(value=False)
+            caption = f"{item.kind}  #{item.id}"
+            ttk.Checkbutton(cell, text=caption, variable=var).pack()
+            self.gallery_cells.append((var, item))
+        if not items:
+            ttk.Label(self.gallery_inner, text="没有找到媒体。", foreground="#777").grid(row=0, column=0, padx=8, pady=8)
+
+    def on_load_gallery(self) -> None:
+        target = self._selected_target()
+        if not target:
+            self.messagebox.showwarning("未选择", "请先在上面列表里选一个群组/频道,或手动输入。")
+            return
+        limit_raw = self.g_limit.get().strip()
+        types_raw = self._types_string()
+
+        async def coro():
+            await self._ensure_client()
+            entity = await resolve_channel(self.client, target)
+            self._gallery_entity = entity
+            self._gallery_title = (
+                getattr(entity, "title", None) or getattr(entity, "username", None) or str(target)
+            )
+            print(f"正在加载『{self._gallery_title}』的媒体缩略图…")
+            items = await list_media(
+                self.client,
+                entity,
+                limit=int(limit_raw) if limit_raw else 60,
+                types=set(types_raw.split(",")) if types_raw else None,
+            )
+            self.root.after(0, lambda: self._populate_gallery(items))
+            print(f"已加载 {len(items)} 个媒体。勾选要保存的,点『保存所选』。")
+
+        self._run_task(coro(), self.load_gallery_btn)
+
+    def on_save_selected(self) -> None:
+        selected = [item for var, item in self.gallery_cells if var.get()]
+        if not selected:
+            self.messagebox.showwarning("未选择", "请先勾选要保存的图片/视频。")
+            return
+
+        async def coro():
+            await self._ensure_client()
+            await save_items(
+                self.client,
+                selected,
+                download_dir=self.settings.download_dir,
+                title=self._gallery_title or "gallery",
+            )
+            print("保存完成。点『打开下载文件夹』查看。\n")
+
+        self._run_task(coro(), self.save_sel_btn)
 
     def _build_download_tab(self):
-        tk, ttk = self.tk, self.ttk
-        pad = {"padx": 6, "pady": 3}
+        ttk = self.ttk
+        pad = {"padx": 6, "pady": 4}
         frame = ttk.Frame(self.root)
         types = ttk.Frame(frame)
         types.grid(row=0, column=0, columnspan=4, sticky="w", **pad)
-        ttk.Label(types, text="Types:").pack(side="left")
-        ttk.Checkbutton(types, text="photo", variable=self.type_photo).pack(side="left")
-        ttk.Checkbutton(types, text="video", variable=self.type_video).pack(side="left")
-        ttk.Checkbutton(types, text="animation", variable=self.type_anim).pack(side="left")
-        ttk.Label(frame, text="Limit").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Label(types, text="下载类型:").pack(side="left")
+        ttk.Checkbutton(types, text="图片", variable=self.type_photo).pack(side="left")
+        ttk.Checkbutton(types, text="视频", variable=self.type_video).pack(side="left")
+        ttk.Checkbutton(types, text="GIF", variable=self.type_anim).pack(side="left")
+        ttk.Label(frame, text="数量上限(可空)").grid(row=1, column=0, sticky="w", **pad)
         ttk.Entry(frame, textvariable=self.dl_limit, width=10).grid(row=1, column=1, sticky="w", **pad)
-        ttk.Label(frame, text="Since (YYYY-MM-DD)").grid(row=1, column=2, sticky="w", **pad)
-        ttk.Entry(frame, textvariable=self.dl_since, width=14).grid(row=1, column=3, sticky="w", **pad)
-        ttk.Label(frame, text="Until (YYYY-MM-DD)").grid(row=2, column=2, sticky="w", **pad)
-        ttk.Entry(frame, textvariable=self.dl_until, width=14).grid(row=2, column=3, sticky="w", **pad)
-        ttk.Checkbutton(frame, text="Re-download existing", variable=self.dl_no_skip).grid(
-            row=2, column=0, columnspan=2, sticky="w", **pad
-        )
-        ttk.Checkbutton(frame, text="Dry run (list only)", variable=self.dl_dry).grid(
-            row=3, column=0, columnspan=2, sticky="w", **pad
-        )
-        self.download_btn = ttk.Button(frame, text="Download", command=self.on_download)
-        self.download_btn.grid(row=3, column=3, sticky="e", **pad)
+        self.download_btn = ttk.Button(frame, text="下载所选", command=self.on_download)
+        self.download_btn.grid(row=1, column=3, sticky="e", **pad)
+        frame.columnconfigure(2, weight=1)
         return frame
 
     def _build_parse_tab(self):
-        tk, ttk = self.tk, self.ttk
-        pad = {"padx": 6, "pady": 3}
+        ttk = self.ttk
+        pad = {"padx": 6, "pady": 4}
         frame = ttk.Frame(self.root)
-        ttk.Label(frame, text="Limit").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Entry(frame, textvariable=self.p_limit, width=10).grid(row=0, column=1, sticky="w", **pad)
-        ttk.Label(frame, text="Since").grid(row=0, column=2, sticky="w", **pad)
-        ttk.Entry(frame, textvariable=self.p_since, width=14).grid(row=0, column=3, sticky="w", **pad)
-        ttk.Label(frame, text="Until").grid(row=1, column=2, sticky="w", **pad)
-        ttk.Entry(frame, textvariable=self.p_until, width=14).grid(row=1, column=3, sticky="w", **pad)
-        ttk.Label(frame, text="HTTP concurrency").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(frame, textvariable=self.p_http, width=6).grid(row=1, column=1, sticky="w", **pad)
-        ttk.Label(frame, text="BT concurrency").grid(row=2, column=0, sticky="w", **pad)
-        ttk.Entry(frame, textvariable=self.p_bt, width=6).grid(row=2, column=1, sticky="w", **pad)
-        ttk.Checkbutton(frame, text="No previews", variable=self.p_no_previews).grid(
-            row=3, column=0, sticky="w", **pad
+        ttk.Label(frame, text="扫描消息里的链接:保留链接、下预览、直链、磁力/种子", foreground="#555").grid(
+            row=0, column=0, columnspan=4, sticky="w", **pad
         )
-        ttk.Checkbutton(frame, text="Catalog only", variable=self.p_catalog_only).grid(
-            row=3, column=1, sticky="w", **pad
-        )
-        ttk.Checkbutton(frame, text="No BT", variable=self.p_no_bt).grid(row=3, column=2, sticky="w", **pad)
-        ttk.Checkbutton(frame, text="Dry run", variable=self.p_dry).grid(row=3, column=3, sticky="w", **pad)
-        self.parse_btn = ttk.Button(frame, text="Parse", command=self.on_parse)
-        self.parse_btn.grid(row=4, column=3, sticky="e", **pad)
+        ttk.Label(frame, text="数量上限(可空)").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(frame, textvariable=self.p_limit, width=10).grid(row=1, column=1, sticky="w", **pad)
+        ttk.Checkbutton(frame, text="不下预览", variable=self.p_no_previews).grid(row=2, column=0, sticky="w", **pad)
+        ttk.Checkbutton(frame, text="只存清单", variable=self.p_catalog_only).grid(row=2, column=1, sticky="w", **pad)
+        ttk.Checkbutton(frame, text="不下磁力/种子", variable=self.p_no_bt).grid(row=2, column=2, sticky="w", **pad)
+        ttk.Checkbutton(frame, text="试运行", variable=self.p_dry).grid(row=2, column=3, sticky="w", **pad)
+        self.parse_btn = ttk.Button(frame, text="解析所选", command=self.on_parse)
+        self.parse_btn.grid(row=3, column=3, sticky="e", **pad)
+        frame.columnconfigure(2, weight=1)
         return frame
 
     # ---------- helpers ----------
-    def _choose_dir(self) -> None:
-        chosen = self.filedialog.askdirectory()
-        if chosen:
-            self.download_dir_var.set(chosen)
-
-    def _on_channel_pick(self, _event=None) -> None:
-        label = self.channel_var.get()
-        if label in self.dialog_map:
-            self.channel_var.set(str(self.dialog_map[label]))
-
     def _log(self, text: str) -> None:
         self.log_queue.put(text)
 
@@ -327,110 +451,143 @@ class _App:
     def _set_status(self, text: str) -> None:
         self.root.after(0, lambda: self.status_var.set(text))
 
+    def _current_download_dir(self) -> Path:
+        raw = self.download_dir_var.get().strip()
+        return Path(raw).expanduser() if raw else default_download_dir()
+
+    def _selected_target(self) -> str | None:
+        sel = self.tree.selection()
+        if sel:
+            values = self.tree.item(sel[0], "values")
+            if values:
+                return str(values[0])
+        manual = self.manual_var.get().strip()
+        return manual or None
+
     def _ask(self, prompt: str, secret: bool = False) -> str:
-        """Prompt the user on the Tk thread and block the asyncio thread."""
         answer: dict[str, str | None] = {}
         done = threading.Event()
 
         def ask_on_ui() -> None:
             show = "*" if secret else ""
-            answer["value"] = self.simpledialog.askstring(
-                "Telegram", prompt, show=show, parent=self.root
-            )
+            answer["value"] = self.simpledialog.askstring("Telegram", prompt, show=show, parent=self.root)
             done.set()
 
         self.root.after(0, ask_on_ui)
         done.wait()
         value = answer.get("value")
         if value is None:
-            raise RuntimeError("Cancelled by user")
+            raise RuntimeError("已取消")
         return value.strip()
 
     def _run_task(self, coro, button) -> None:
-        button.config(state="disabled")
+        if button is not None:
+            button.config(state="disabled")
         future = self.loop.submit(coro)
 
         def finished(fut) -> None:
             try:
                 fut.result()
-            except Exception as exc:  # noqa: BLE001 - surface all errors to the log
-                self._log(f"\n[error] {exc}\n")
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"\n[错误] {exc}\n")
             finally:
-                self.root.after(0, lambda: button.config(state="normal"))
+                if button is not None:
+                    self.root.after(0, lambda: button.config(state="normal"))
 
         future.add_done_callback(finished)
 
-    def _save_env_from_fields(self) -> None:
-        update_env(
-            {
-                "api_id": self.api_id_var.get().strip(),
-                "api_hash": self.api_hash_var.get().strip(),
-                "phone": self.phone_var.get().strip(),
-                "download_dir": self.download_dir_var.get().strip(),
-            }
-        )
+    def _save_dir_only(self) -> None:
+        values = read_env_values()
+        values["download_dir"] = self.download_dir_var.get().strip() or str(default_download_dir())
+        update_env(values)
 
-    # ---------- async client ----------
+    # ---------- client ----------
     async def _ensure_client(self):
         if self.client is not None:
             return self.client
         settings = load_settings()
         self.settings = settings
-        client = build_client(settings)
-
-        def phone_cb():
-            return settings.phone or self._ask("Phone number (+countrycode):")
-
-        await client.start(
-            phone=phone_cb,
-            code_callback=lambda: self._ask("Login code from Telegram:"),
-            password=lambda: self._ask("Two-step password:", secret=True),
-        )
-        me = await client.get_me()
+        await self.client_start(settings)
+        me = await self.client.get_me()
         if me is None:
-            raise RuntimeError("Login failed")
+            raise RuntimeError("登录失败")
         name = " ".join(p for p in (me.first_name, me.last_name) if p)
         handle = f"@{me.username}" if me.username else ""
-        print(f"Logged in as {name} {handle} (id={me.id})".strip())
-        self._set_status(f"Logged in: {name} {handle}".strip())
-        self.client = client
-        return client
+        print(f"已登录:{name} {handle} (id={me.id})".strip())
+        self._set_status(f"已登录:{name} {handle}".strip())
+        return self.client
 
-    # ---------- button handlers ----------
-    def on_login(self) -> None:
+    async def client_start(self, settings) -> None:
+        self.client = build_client(settings)
+        await self.client.start(
+            phone=lambda: settings.phone or self._ask("手机号(带国际区号,如 +8613800138000):"),
+            code_callback=lambda: self._ask("Telegram 发来的验证码:"),
+            password=lambda: self._ask("两步验证密码:", secret=True),
+        )
+
+    # ---------- handlers ----------
+    def on_save_creds(self) -> None:
         if not self.api_id_var.get().strip() or not self.api_hash_var.get().strip():
-            self.messagebox.showwarning("Missing", "Please fill API ID and API HASH first.")
+            self.messagebox.showwarning("缺少信息", "请先填写 api_id 和 api_hash。")
             return
-        self._save_env_from_fields()
-        self._log("Logging in...\n")
+        update_env(
+            {
+                "api_id": self.api_id_var.get().strip(),
+                "api_hash": self.api_hash_var.get().strip(),
+                "phone": self.phone_var.get().strip(),
+                "download_dir": self.download_dir_var.get().strip() or str(default_download_dir()),
+            }
+        )
+        self.creds_available = True
+        if getattr(self, "_setup_frame", None) is not None:
+            self._setup_frame.destroy()
+            self._setup_frame = None
+        self._log("已保存凭据。现在点『登录 Telegram』。\n")
+
+    def on_login(self) -> None:
+        if not credentials_available() and not (
+            self.api_id_var.get().strip() and self.api_hash_var.get().strip()
+        ):
+            self.messagebox.showwarning("缺少信息", "请先在『首次设置』里填写 api_id / api_hash 并保存。")
+            return
+        # persist phone/dir so they are remembered
+        update_env(
+            {
+                "api_id": self.api_id_var.get().strip(),
+                "api_hash": self.api_hash_var.get().strip(),
+                "phone": self.phone_var.get().strip(),
+                "download_dir": self.download_dir_var.get().strip() or str(default_download_dir()),
+            }
+        )
+        self._log("正在登录…(首次会向你的 Telegram 发送验证码)\n")
 
         async def coro():
             await self._ensure_client()
+            await self._load_dialogs()
 
         self._run_task(coro(), self.login_btn)
 
     def on_list(self) -> None:
         async def coro():
-            client = await self._ensure_client()
-            items = await list_media_dialogs(client)
-            labels = [f"{it.entity_id}  {it.title}" for it in items]
-            mapping = {label: it.entity_id for label, it in zip(labels, items)}
+            await self._ensure_client()
+            await self._load_dialogs()
 
-            def apply():
-                self.dialog_map = mapping
-                self.channel_combo["values"] = labels
+        self._run_task(coro(), self.refresh_btn)
 
-            self.root.after(0, apply)
-            print(f"Found {len(items)} channels/groups. Pick one from the dropdown.")
+    async def _load_dialogs(self) -> None:
+        items = await list_media_dialogs(self.client)
+        rows = [(str(it.entity_id), it.kind, it.title) for it in items]
 
-        self._run_task(coro(), self.list_btn)
+        def apply():
+            self.tree.delete(*self.tree.get_children())
+            for row in rows:
+                self.tree.insert("", "end", values=row)
 
-    def on_download(self) -> None:
-        channel = self.channel_var.get().strip()
-        if not channel:
-            self.messagebox.showwarning("Missing", "Enter or pick a channel first.")
-            return
-        types_raw = ",".join(
+        self.root.after(0, apply)
+        print(f"已加载 {len(rows)} 个群组/频道。点选一个,然后『下载所选』。")
+
+    def _types_string(self) -> str:
+        return ",".join(
             name
             for name, var in (
                 ("photo", self.type_photo),
@@ -439,77 +596,112 @@ class _App:
             )
             if var.get()
         )
-        if not types_raw:
-            self.messagebox.showwarning("Missing", "Select at least one media type.")
+
+    def on_download(self) -> None:
+        target = self._selected_target()
+        if not target:
+            self.messagebox.showwarning("未选择", "请先在列表里选一个群组/频道,或手动输入。")
             return
-        opts = {
-            "channel": channel,
-            "types": types_raw,
-            "limit": self.dl_limit.get().strip(),
-            "since": self.dl_since.get().strip(),
-            "until": self.dl_until.get().strip(),
-            "no_skip": self.dl_no_skip.get(),
-            "dry": self.dl_dry.get(),
-        }
+        types_raw = self._types_string()
+        if not types_raw:
+            self.messagebox.showwarning("未选择", "至少选择一种下载类型。")
+            return
+        limit = self.dl_limit.get().strip()
 
         async def coro():
-            client = await self._ensure_client()
+            await self._ensure_client()
             await download_channel(
-                client,
-                target=opts["channel"],
+                self.client,
+                target=target,
                 download_dir=self.settings.download_dir,
-                types=parse_types(opts["types"]),
-                limit=int(opts["limit"]) if opts["limit"] else None,
-                since=parse_day(opts["since"] or None),
-                until=parse_day(opts["until"] or None, end_of_day=True),
-                skip_existing=not opts["no_skip"],
-                dry_run=opts["dry"],
+                types=parse_types(types_raw),
+                limit=int(limit) if limit else None,
+                since=None,
+                until=None,
+                skip_existing=True,
+                dry_run=False,
             )
-            print("Download task finished.\n")
+            print("下载完成。点『打开下载文件夹』查看。\n")
 
         self._run_task(coro(), self.download_btn)
 
     def on_parse(self) -> None:
-        channel = self.channel_var.get().strip()
-        if not channel:
-            self.messagebox.showwarning("Missing", "Enter or pick a channel first.")
+        target = self._selected_target()
+        if not target:
+            self.messagebox.showwarning("未选择", "请先在列表里选一个群组/频道,或手动输入。")
             return
+        limit = self.p_limit.get().strip()
         opts = {
-            "channel": channel,
-            "limit": self.p_limit.get().strip(),
-            "since": self.p_since.get().strip(),
-            "until": self.p_until.get().strip(),
             "no_previews": self.p_no_previews.get(),
             "catalog_only": self.p_catalog_only.get(),
             "no_bt": self.p_no_bt.get(),
-            "http": self.p_http.get().strip() or "3",
-            "bt": self.p_bt.get().strip() or "1",
             "dry": self.p_dry.get(),
         }
 
         async def coro():
-            client = await self._ensure_client()
+            await self._ensure_client()
             kwargs = dict(
-                target=opts["channel"],
+                target=target,
                 download_dir=self.settings.download_dir,
-                limit=int(opts["limit"]) if opts["limit"] else None,
-                since=parse_day(opts["since"] or None),
-                until=parse_day(opts["until"] or None, end_of_day=True),
+                limit=int(limit) if limit else None,
+                since=None,
+                until=None,
                 keep_previews=not opts["no_previews"],
                 download_direct=not opts["catalog_only"],
                 download_torrents=not opts["catalog_only"] and not opts["no_bt"],
                 dry_run=opts["dry"],
             )
-            # concurrency knobs exist only on newer parse_channel; pass if supported.
-            import inspect
-
-            if "http_concurrency" in inspect.signature(parse_channel).parameters:
-                kwargs["http_concurrency"] = int(opts["http"])
-                kwargs["bt_concurrency"] = int(opts["bt"])
-            await parse_channel(client, **kwargs)
-            print("Parse task finished.\n")
+            await parse_channel(self.client, **kwargs)
+            print("解析完成。\n")
 
         self._run_task(coro(), self.parse_btn)
+
+    def _change_dir(self) -> None:
+        from tkinter import filedialog
+
+        chosen = filedialog.askdirectory()
+        if chosen:
+            self.download_dir_var.set(chosen)
+            self._save_dir_only()
+            if self.settings is not None:
+                self.settings = Settings(
+                    api_id=self.settings.api_id,
+                    api_hash=self.settings.api_hash,
+                    phone=self.settings.phone,
+                    download_dir=Path(chosen),
+                )
+
+    def _open_folder(self) -> None:
+        folder = self._current_download_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"[错误] 打不开文件夹:{exc}\n")
+
+    def _open_settings(self) -> None:
+        tk, ttk = self.tk, self.ttk
+        win = tk.Toplevel(self.root)
+        win.title("设置")
+        win.transient(self.root)
+        pad = {"padx": 8, "pady": 6}
+        ttk.Label(win, text="api_id").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Entry(win, textvariable=self.api_id_var, width=20).grid(row=0, column=1, **pad)
+        ttk.Label(win, text="api_hash").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(win, textvariable=self.api_hash_var, width=42).grid(row=1, column=1, **pad)
+        ttk.Label(win, text="下载目录").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Entry(win, textvariable=self.download_dir_var, width=42).grid(row=2, column=1, **pad)
+
+        def save_and_close():
+            self.on_save_creds()
+            win.destroy()
+
+        ttk.Button(win, text="保存", command=save_and_close).grid(row=3, column=1, sticky="e", **pad)
 
     # ---------- lifecycle ----------
     def _on_close(self) -> None:

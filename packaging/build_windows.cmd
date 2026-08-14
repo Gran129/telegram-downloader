@@ -5,7 +5,7 @@ setlocal
 cd /d "%~dp0.."
 
 set "VERSION=%~1"
-if "%VERSION%"=="" set "VERSION=1.3.0"
+if "%VERSION%"=="" set "VERSION=1.3.4"
 
 echo === Installing build dependencies ===
 python -m pip install --upgrade pip || goto :err
@@ -19,8 +19,13 @@ set "MAKENSIS=makensis"
 where makensis >nul 2>nul || set "MAKENSIS=%PROGRAMFILES(x86)%\NSIS\makensis.exe"
 "%MAKENSIS%" /DVERSION=%VERSION% packaging\installer.nsi || goto :err
 
+echo === Packaging portable ZIP ===
+powershell -NoProfile -Command "Compress-Archive -Path dist/TelegramDownloader -DestinationPath TelegramDownloader-%VERSION%-portable-win64.zip -Force" || goto :err
+
 echo.
-echo Done. Installer: TelegramDownloader-Setup-%VERSION%.exe
+echo Done.
+echo   Installer: TelegramDownloader-Setup-%VERSION%.exe
+echo   Portable:  TelegramDownloader-%VERSION%-portable-win64.zip
 goto :eof
 
 :err

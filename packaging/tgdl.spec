@@ -7,15 +7,33 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
+# Resolve everything from the spec's own directory (absolute), NOT the current
+# working directory: PyInstaller does not reliably chdir to the spec folder on
+# every platform, and CI invokes it from the repo root. SPECPATH is injected by
+# PyInstaller and points at this file's directory.
+try:
+    _HERE = os.path.abspath(SPECPATH)  # noqa: F821 - provided by PyInstaller
+except NameError:  # pragma: no cover - fallback when run oddly
+    _HERE = os.path.abspath(os.getcwd())
+_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir))
+
 # Make the repo root importable so collect_submodules("tgdl") works.
-_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+# Fail the build loudly if tgdl cannot be found (rather than shipping a broken
+# exe that raises ModuleNotFoundError at runtime).
+import importlib
+
+try:
+    importlib.import_module("tgdl.gui")
+except Exception as exc:  # pragma: no cover - build-time guard
+    raise SystemExit(f"[tgdl.spec] cannot import tgdl from {_ROOT!r}: {exc}")
 
 APP_NAME = "TelegramDownloader"
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("telethon", "aiohttp", "dotenv", "tqdm", "rsa", "pyaes"):
+for pkg in ("telethon", "aiohttp", "dotenv", "tqdm", "rsa", "pyaes", "PIL"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
@@ -23,13 +41,13 @@ for pkg in ("telethon", "aiohttp", "dotenv", "tqdm", "rsa", "pyaes"):
 hiddenimports += collect_submodules("tgdl")
 
 # Bundle the window icon so the GUI can load it at runtime.
-datas += [("../tgdl/assets/app.png", "tgdl/assets")]
+datas += [(os.path.join(_ROOT, "tgdl", "assets", "app.png"), os.path.join("tgdl", "assets"))]
 
 block_cipher = None
 
 a = Analysis(
-    ["gui_main.py"],
-    pathex=[".."],
+    [os.path.join(_HERE, "gui_main.py")],
+    pathex=[_ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -44,6 +62,12 @@ a = Analysis(
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+# Windows version resource (embeds file metadata to reduce AV false positives).
+# The version file is a Windows-only PE resource; skip it on other platforms so
+# the spec still builds there for validation.
+_version_file = os.path.join(_HERE, "version_info.txt")
+exe_version = _version_file if sys.platform.startswith("win") and os.path.exists(_version_file) else None
 
 exe = EXE(
     pyz,
@@ -60,7 +84,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="app.ico",
+    icon=os.path.join(_HERE, "app.ico"),
+    version=exe_version,
 )
 
 coll = COLLECT(

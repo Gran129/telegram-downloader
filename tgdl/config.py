@@ -26,9 +26,52 @@ class Settings:
     download_dir: Path
 
 
+def default_download_dir() -> Path:
+    """Sensible default so users never have to pick a folder."""
+    return Path.home() / "Downloads" / "TelegramDownloader"
+
+
+def _bundled_defaults() -> tuple[str, str] | None:
+    """Optional api_id/api_hash baked into the build (tgdl/_defaults.py).
+
+    This lets a distributed build ship its own credentials so end users only
+    log in with their phone — exactly like the official client. The file is
+    generated at build time from repo secrets and is never committed.
+    """
+    try:
+        from tgdl import _defaults  # type: ignore[attr-defined]
+
+        api_id = str(getattr(_defaults, "API_ID", "")).strip()
+        api_hash = str(getattr(_defaults, "API_HASH", "")).strip()
+        if api_id and api_hash:
+            return api_id, api_hash
+    except Exception:
+        pass
+    return None
+
+
+def resolve_api_credentials(env: dict[str, str] | None = None) -> tuple[str, str] | None:
+    """Return (api_id, api_hash) from env/.env, else bundled defaults, else None."""
+    if env is None:
+        load_dotenv(ENV_PATH, override=True)
+        source = os.environ
+    else:
+        source = env
+    api_id = (source.get("TELEGRAM_API_ID", "") or "").strip()
+    api_hash = (source.get("TELEGRAM_API_HASH", "") or "").strip()
+    if api_id and api_hash:
+        return api_id, api_hash
+    return _bundled_defaults()
+
+
+def credentials_available() -> bool:
+    """True when the app already has api_id/api_hash (saved or bundled)."""
+    return resolve_api_credentials() is not None
+
+
 def read_env_values() -> dict[str, str]:
     """Read raw .env values for pre-filling the GUI (no validation)."""
-    values = {"api_id": "", "api_hash": "", "phone": "", "download_dir": "./downloads"}
+    values = {"api_id": "", "api_hash": "", "phone": "", "download_dir": str(default_download_dir())}
     if ENV_PATH.exists():
         for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
@@ -68,21 +111,20 @@ def update_env(values: dict[str, str]) -> Path:
 
 
 def load_settings() -> Settings:
-    load_dotenv(ROOT / ".env", override=True)
-    api_id_raw = os.getenv("TELEGRAM_API_ID", "").strip()
-    api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
+    creds = resolve_api_credentials()  # loads .env and checks bundled defaults
     phone = os.getenv("TELEGRAM_PHONE", "").strip() or None
-    download_dir = Path(os.getenv("DOWNLOAD_DIR", "./downloads")).expanduser()
+    dd_raw = os.getenv("DOWNLOAD_DIR", "").strip()
+    download_dir = Path(dd_raw).expanduser() if dd_raw else default_download_dir()
     if not download_dir.is_absolute():
         download_dir = ROOT / download_dir
 
-    if not api_id_raw or not api_hash:
+    if creds is None:
         raise SystemExit(
             "Missing TELEGRAM_API_ID / TELEGRAM_API_HASH.\n"
-            "1. Copy .env.example to .env\n"
-            "2. Open https://my.telegram.org -> API development tools\n"
-            "3. Paste api_id and api_hash into .env"
+            "1. Open https://my.telegram.org -> API development tools\n"
+            "2. Enter api_id and api_hash once in the app (they are remembered)."
         )
+    api_id_raw, api_hash = creds
     try:
         api_id = int(api_id_raw)
     except ValueError as exc:

@@ -2,3 +2,4 @@ telethon>=1.37.0
 python-dotenv>=1.0.1
 tqdm>=4.66.0
 aiohttp>=3.9.0
+Pillow>=10.0.0

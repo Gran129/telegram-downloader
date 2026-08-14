@@ -10,5 +10,9 @@ dist/
 build/
 *.egg-info/
 TelegramDownloader-Setup-*.exe
+TelegramDownloader-*-portable-win64.zip
+
+# Build-time baked default API credentials (never commit)
+tgdl/_defaults.py
 .idea/
 .vscode/

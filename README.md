@@ -16,10 +16,40 @@
 
 ## 图形界面 (GUI，即点即用)
 
-不想用命令行可以用图形界面：
+用起来就像 Telegram 官方客户端:**登录手机号 → 输验证码 → 自动列出你的群组/频道 → 选一个** → 在 **“浏览媒体”** 页像刷聊天一样看缩略图,**勾选想要的图片/视频,点“保存所选”**;也可以在“批量下载”页一次性全下。下载目录自动默认到 `下载/TelegramDownloader`,无需填写。
 
-- **已打包版**：从 [Releases](../../releases) 下载 `TelegramDownloader-Setup-*.exe`，安装后从桌面 / 开始菜单打开。
-- **源码运行**：双击 `start-gui.cmd`（首次自动建 venv、装依赖、复制 `.env`），或命令行 `python -m tgdl gui`。
+- **便携版(推荐，最不易被拦)**：从 [Releases](../../releases) 下载 `TelegramDownloader-*-portable-win64.zip`，解压后运行里面的 `TelegramDownloader.exe`。
+- **安装版**：下载 `TelegramDownloader-Setup-*.exe` 安装,从桌面 / 开始菜单打开。
+- **源码运行(零杀软误报)**：双击 `start-gui.cmd`，或命令行 `python -m tgdl gui`。
+
+### 申请 api_id / api_hash 时 my.telegram.org 报错怎么办?
+
+`my.telegram.org` 创建应用时经常弹一个笼统的 `ERROR`,这是它自己的老毛病,常见解决:
+
+- **换浏览器 / 无痕窗口**,或**关掉 VPN/代理**后重试(有时反而需要挂梯子换个地区,两者都试试)。
+- **App title / Short name** 用纯英文、别用特殊字符;URL 之类可留空或随便填 `https://example.com`。
+- 点一次“Create application”若报错,**刷新页面看看其实已经创建**(常常已经生成了 api_id/api_hash)。
+- 登录 `my.telegram.org` 本身要输 Telegram App 收到的验证码;若一直收不到,过几分钟再试。
+- 实在申请不了:可以让**打包版内置**一对凭据(见下一节的 secret 方案),终端用户就不用自己申请。
+
+### 为什么第一次要填 api_id / api_hash?
+
+这是 Telegram **官方 API 的硬性要求**——任何 MTProto 客户端(包括官方 App)都需要,只是官方把它内置了。你只需在 https://my.telegram.org 申请一次,填进去程序就会**记住**,之后就只用登录手机号。
+
+**想让打包出来的程序连 api_id/api_hash 都不用填**(真正“即点即用”):在 GitHub 仓库
+`Settings → Secrets and variables → Actions` 里加两个 secret `TGDL_DEFAULT_API_ID`、
+`TGDL_DEFAULT_API_HASH`(用你自己申请的),再打 tag 发版即可;发布出来的 exe 会内置这对
+凭据,终端用户只需登录手机号。
+
+### 浏览器/杀毒提示“检测到病毒”怎么办
+
+这是 **PyInstaller 打包的未签名程序常见的误报**（不是真的病毒，是本项目自己打的包）。处理办法（任选）：
+
+1. **优先用便携版 ZIP**：浏览器一般不拦 `.zip`。下载解压后运行 `TelegramDownloader.exe` 即可。
+2. **让浏览器保留文件**：Chrome/Edge 下载栏里对被拦的文件点“保留 / 仍然保留”。
+3. **Windows Defender 拦截**：在“病毒和威胁防护 → 允许的威胁 / 添加排除项”里允许该文件，或把安装目录加入排除。
+4. **彻底不碰 exe**：装好 Python 后用上面的 `start-gui.cmd` 从源码运行，完全没有误报。
+5. **根治(可选)**：给 exe 做**代码签名**（需购买 OV/EV 代码签名证书）后基本不再误报——这需要你的证书，我无法代办。
 
 界面里可以：填写 API ID / HASH、登录（手机验证码 / 二次密码会弹窗）、列出频道、下载媒体、以及解析链接（直链 / 磁力 / 种子），日志实时显示在下方。
 
@@ -27,8 +57,8 @@
 
 详见 [`packaging/README.md`](packaging/README.md)。简述：
 
-- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.0`。
-- 自动发布：把本仓库合并后推送 `v1.3.0` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
+- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.4`。
+- 自动发布：把本仓库合并后推送 `v1.3.4` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
 
 > 注意：PyInstaller 不能跨平台编译，Windows 安装包必须在 Windows（本地或 CI）上构建。
 

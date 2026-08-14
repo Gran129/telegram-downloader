@@ -24,6 +24,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Bake default API credentials (optional)
+        shell: pwsh
+        env:
+          TGDL_DEFAULT_API_ID: ${{ secrets.TGDL_DEFAULT_API_ID }}
+          TGDL_DEFAULT_API_HASH: ${{ secrets.TGDL_DEFAULT_API_HASH }}
+        run: |
+          if ($env:TGDL_DEFAULT_API_ID -and $env:TGDL_DEFAULT_API_HASH) {
+            "API_ID = `"$env:TGDL_DEFAULT_API_ID`"`nAPI_HASH = `"$env:TGDL_DEFAULT_API_HASH`"" | Out-File -Encoding utf8 tgdl/_defaults.py
+            Write-Host "Baked default credentials into tgdl/_defaults.py"
+          } else {
+            Write-Host "No TGDL_DEFAULT_API_ID/HASH secrets set; users will enter api_id/api_hash once."
+          }
+
       - name: Build exe (PyInstaller)
         run: pyinstaller --noconfirm packaging/tgdl.spec
 
@@ -47,15 +60,25 @@ jobs:
           if (-not (Test-Path $makensis)) { $makensis = "makensis" }
           & $makensis /DVERSION=${{ steps.ver.outputs.version }} packaging/installer.nsi
 
-      - name: Upload installer artifact
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $zip = "TelegramDownloader-${{ steps.ver.outputs.version }}-portable-win64.zip"
+          Compress-Archive -Path dist/TelegramDownloader -DestinationPath $zip -Force
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TelegramDownloader-Setup
-          path: TelegramDownloader-Setup-*.exe
+          name: TelegramDownloader
+          path: |
+            TelegramDownloader-Setup-*.exe
+            TelegramDownloader-*-portable-win64.zip
 
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: TelegramDownloader-Setup-*.exe
+          files: |
+            TelegramDownloader-Setup-*.exe
+            TelegramDownloader-*-portable-win64.zip
           generate_release_notes: true
