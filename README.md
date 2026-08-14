@@ -27,8 +27,8 @@
 
 详见 [`packaging/README.md`](packaging/README.md)。简述：
 
-- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.0`。
-- 自动发布：把本仓库合并后推送 `v1.3.0` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
+- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.1`。
+- 自动发布：把本仓库合并后推送 `v1.3.1` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
 
 > 注意：PyInstaller 不能跨平台编译，Windows 安装包必须在 Windows（本地或 CI）上构建。
 
