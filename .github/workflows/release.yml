@@ -47,15 +47,25 @@ jobs:
           if (-not (Test-Path $makensis)) { $makensis = "makensis" }
           & $makensis /DVERSION=${{ steps.ver.outputs.version }} packaging/installer.nsi
 
-      - name: Upload installer artifact
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $zip = "TelegramDownloader-${{ steps.ver.outputs.version }}-portable-win64.zip"
+          Compress-Archive -Path dist/TelegramDownloader -DestinationPath $zip -Force
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: TelegramDownloader-Setup
-          path: TelegramDownloader-Setup-*.exe
+          name: TelegramDownloader
+          path: |
+            TelegramDownloader-Setup-*.exe
+            TelegramDownloader-*-portable-win64.zip
 
       - name: Publish to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: TelegramDownloader-Setup-*.exe
+          files: |
+            TelegramDownloader-Setup-*.exe
+            TelegramDownloader-*-portable-win64.zip
           generate_release_notes: true

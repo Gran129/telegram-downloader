@@ -10,5 +10,6 @@ dist/
 build/
 *.egg-info/
 TelegramDownloader-Setup-*.exe
+TelegramDownloader-*-portable-win64.zip
 .idea/
 .vscode/

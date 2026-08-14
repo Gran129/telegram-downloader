@@ -63,6 +63,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# Windows version resource (embeds file metadata to reduce AV false positives).
+# The version file is a Windows-only PE resource; skip it on other platforms so
+# the spec still builds there for validation.
+_version_file = os.path.join(_HERE, "version_info.txt")
+exe_version = _version_file if sys.platform.startswith("win") and os.path.exists(_version_file) else None
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -79,6 +85,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=os.path.join(_HERE, "app.ico"),
+    version=exe_version,
 )
 
 coll = COLLECT(

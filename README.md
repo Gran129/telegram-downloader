@@ -18,8 +18,19 @@
 
 不想用命令行可以用图形界面：
 
-- **已打包版**：从 [Releases](../../releases) 下载 `TelegramDownloader-Setup-*.exe`，安装后从桌面 / 开始菜单打开。
-- **源码运行**：双击 `start-gui.cmd`（首次自动建 venv、装依赖、复制 `.env`），或命令行 `python -m tgdl gui`。
+- **便携版(推荐，最不易被拦)**：从 [Releases](../../releases) 下载 `TelegramDownloader-*-portable-win64.zip`，解压后运行里面的 `TelegramDownloader.exe`。
+- **安装版**：下载 `TelegramDownloader-Setup-*.exe` 安装,从桌面 / 开始菜单打开。
+- **源码运行(零杀软误报)**：双击 `start-gui.cmd`（首次自动建 venv、装依赖、复制 `.env`），或命令行 `python -m tgdl gui`。
+
+### 浏览器/杀毒提示“检测到病毒”怎么办
+
+这是 **PyInstaller 打包的未签名程序常见的误报**（不是真的病毒，是本项目自己打的包）。处理办法（任选）：
+
+1. **优先用便携版 ZIP**：浏览器一般不拦 `.zip`。下载解压后运行 `TelegramDownloader.exe` 即可。
+2. **让浏览器保留文件**：Chrome/Edge 下载栏里对被拦的文件点“保留 / 仍然保留”。
+3. **Windows Defender 拦截**：在“病毒和威胁防护 → 允许的威胁 / 添加排除项”里允许该文件，或把安装目录加入排除。
+4. **彻底不碰 exe**：装好 Python 后用上面的 `start-gui.cmd` 从源码运行，完全没有误报。
+5. **根治(可选)**：给 exe 做**代码签名**（需购买 OV/EV 代码签名证书）后基本不再误报——这需要你的证书，我无法代办。
 
 界面里可以：填写 API ID / HASH、登录（手机验证码 / 二次密码会弹窗）、列出频道、下载媒体、以及解析链接（直链 / 磁力 / 种子），日志实时显示在下方。
 
@@ -27,8 +38,8 @@
 
 详见 [`packaging/README.md`](packaging/README.md)。简述：
 
-- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.1`。
-- 自动发布：把本仓库合并后推送 `v1.3.1` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
+- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.2`。
+- 自动发布：把本仓库合并后推送 `v1.3.2` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
 
 > 注意：PyInstaller 不能跨平台编译，Windows 安装包必须在 Windows（本地或 CI）上构建。
 
