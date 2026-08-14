@@ -16,11 +16,20 @@
 
 ## 图形界面 (GUI，即点即用)
 
-不想用命令行可以用图形界面：
+用起来就像 Telegram 官方客户端:**登录手机号 → 输验证码 → 自动列出你的群组/频道 → 选一个点“下载所选”**。下载目录自动默认到 `下载/TelegramDownloader`,无需填写。
 
 - **便携版(推荐，最不易被拦)**：从 [Releases](../../releases) 下载 `TelegramDownloader-*-portable-win64.zip`，解压后运行里面的 `TelegramDownloader.exe`。
 - **安装版**：下载 `TelegramDownloader-Setup-*.exe` 安装,从桌面 / 开始菜单打开。
-- **源码运行(零杀软误报)**：双击 `start-gui.cmd`（首次自动建 venv、装依赖、复制 `.env`），或命令行 `python -m tgdl gui`。
+- **源码运行(零杀软误报)**：双击 `start-gui.cmd`，或命令行 `python -m tgdl gui`。
+
+### 为什么第一次要填 api_id / api_hash?
+
+这是 Telegram **官方 API 的硬性要求**——任何 MTProto 客户端(包括官方 App)都需要,只是官方把它内置了。你只需在 https://my.telegram.org 申请一次,填进去程序就会**记住**,之后就只用登录手机号。
+
+**想让打包出来的程序连 api_id/api_hash 都不用填**(真正“即点即用”):在 GitHub 仓库
+`Settings → Secrets and variables → Actions` 里加两个 secret `TGDL_DEFAULT_API_ID`、
+`TGDL_DEFAULT_API_HASH`(用你自己申请的),再打 tag 发版即可;发布出来的 exe 会内置这对
+凭据,终端用户只需登录手机号。
 
 ### 浏览器/杀毒提示“检测到病毒”怎么办
 
@@ -38,8 +47,8 @@
 
 详见 [`packaging/README.md`](packaging/README.md)。简述：
 
-- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.2`。
-- 自动发布：把本仓库合并后推送 `v1.3.2` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
+- Windows 本地：仓库根目录运行 `packaging\build_windows.cmd 1.3.3`。
+- 自动发布：把本仓库合并后推送 `v1.3.3` 标签，GitHub Actions 会在 Windows 上用 PyInstaller + NSIS 构建并发布到 **Releases**。
 
 > 注意：PyInstaller 不能跨平台编译，Windows 安装包必须在 Windows（本地或 CI）上构建。
 

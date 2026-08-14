@@ -24,6 +24,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Bake default API credentials (optional)
+        shell: pwsh
+        env:
+          TGDL_DEFAULT_API_ID: ${{ secrets.TGDL_DEFAULT_API_ID }}
+          TGDL_DEFAULT_API_HASH: ${{ secrets.TGDL_DEFAULT_API_HASH }}
+        run: |
+          if ($env:TGDL_DEFAULT_API_ID -and $env:TGDL_DEFAULT_API_HASH) {
+            "API_ID = `"$env:TGDL_DEFAULT_API_ID`"`nAPI_HASH = `"$env:TGDL_DEFAULT_API_HASH`"" | Out-File -Encoding utf8 tgdl/_defaults.py
+            Write-Host "Baked default credentials into tgdl/_defaults.py"
+          } else {
+            Write-Host "No TGDL_DEFAULT_API_ID/HASH secrets set; users will enter api_id/api_hash once."
+          }
+
       - name: Build exe (PyInstaller)
         run: pyinstaller --noconfirm packaging/tgdl.spec
 

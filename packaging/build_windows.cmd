@@ -5,7 +5,7 @@ setlocal
 cd /d "%~dp0.."
 
 set "VERSION=%~1"
-if "%VERSION%"=="" set "VERSION=1.3.2"
+if "%VERSION%"=="" set "VERSION=1.3.3"
 
 echo === Installing build dependencies ===
 python -m pip install --upgrade pip || goto :err
