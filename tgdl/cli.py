@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("login", help="Log in with phone + verification code")
     sub.add_parser("list", help="List channels and groups on this account")
+    sub.add_parser("gui", help="Launch the graphical interface")
 
     download = sub.add_parser("download", help="Download media from one channel")
     download.add_argument(
@@ -230,7 +231,11 @@ async def cmd_menu() -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    if args.command == "login":
+    if args.command == "gui":
+        from tgdl.gui import run_gui
+
+        run_gui()
+    elif args.command == "login":
         asyncio.run(cmd_login())
     elif args.command == "list":
         asyncio.run(cmd_list())
