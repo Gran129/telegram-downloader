@@ -1,6 +1,16 @@
 # PyInstaller spec for Telegram Downloader (GUI).
 # Build from the repository root:  pyinstaller --noconfirm packaging/tgdl.spec
+# Note: PyInstaller runs a .spec with the working directory set to the spec's
+# folder (packaging/), so relative paths below are relative to packaging/.
+import os
+import sys
+
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+# Make the repo root importable so collect_submodules("tgdl") works.
+_ROOT = os.path.abspath(os.path.join(os.getcwd(), ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 APP_NAME = "TelegramDownloader"
 
@@ -12,11 +22,14 @@ for pkg in ("telethon", "aiohttp", "dotenv", "tqdm", "rsa", "pyaes"):
     hiddenimports += pkg_hidden
 hiddenimports += collect_submodules("tgdl")
 
+# Bundle the window icon so the GUI can load it at runtime.
+datas += [("../tgdl/assets/app.png", "tgdl/assets")]
+
 block_cipher = None
 
 a = Analysis(
-    ["packaging/gui_main.py"],
-    pathex=["."],
+    ["gui_main.py"],
+    pathex=[".."],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -47,6 +60,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="app.ico",
 )
 
 coll = COLLECT(

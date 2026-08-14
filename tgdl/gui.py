@@ -65,6 +65,19 @@ def _silence_progress_bars() -> None:
             module.tqdm = _SilentBar  # type: ignore[attr-defined]
 
 
+def _icon_path() -> Path | None:
+    """Locate the app icon PNG in both source and PyInstaller builds."""
+    candidates = []
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", ""))
+        candidates.append(base / "tgdl" / "assets" / "app.png")
+    candidates.append(Path(__file__).resolve().parent / "assets" / "app.png")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 class AsyncLoop:
     """Runs an asyncio event loop in a dedicated background thread."""
 
@@ -135,6 +148,14 @@ class _App:
         self.root.title("Telegram 下载器 (tgdl)")
         self.root.geometry("860x680")
         self.root.minsize(760, 560)
+        self._app_icon = None
+        try:
+            icon = _icon_path()
+            if icon is not None:
+                self._app_icon = tk.PhotoImage(file=str(icon))
+                self.root.iconphoto(True, self._app_icon)
+        except Exception:
+            pass  # window icon is cosmetic; never fail the app over it
 
         env = read_env_values()
         self.api_id_var = tk.StringVar(value=env["api_id"])
