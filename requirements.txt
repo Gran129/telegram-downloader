@@ -1,0 +1,2 @@
+# Runtime dependencies for telegram-downloader
+telethon>=1.36,<2
