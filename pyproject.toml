@@ -1,6 +1,6 @@
 [project]
 name = "tgdl"
-version = "1.0.0"
+version = "1.2.0"
 description = "Download photos and videos from Telegram channels you already joined."
 requires-python = ">=3.10"
 dependencies = [

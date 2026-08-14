@@ -8,7 +8,11 @@ from tgdl.channels import format_dialog, list_media_dialogs
 from tgdl.client import build_client, ensure_login
 from tgdl.config import load_settings
 from tgdl.downloader import ALL_TYPES, PHOTO_TYPES, download_channel
-from tgdl.parser import parse_channel
+from tgdl.parser import (
+    DEFAULT_BT_CONCURRENCY,
+    DEFAULT_HTTP_CONCURRENCY,
+    parse_channel,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-bt",
         action="store_true",
         help="Do not download magnet or .torrent payloads",
+    )
+    parse.add_argument(
+        "--http-concurrency",
+        type=int,
+        default=DEFAULT_HTTP_CONCURRENCY,
+        help=f"Parallel HTTP downloads (default: {DEFAULT_HTTP_CONCURRENCY})",
+    )
+    parse.add_argument(
+        "--bt-concurrency",
+        type=int,
+        default=DEFAULT_BT_CONCURRENCY,
+        help=f"Parallel torrent downloads (default: {DEFAULT_BT_CONCURRENCY})",
     )
     parse.add_argument(
         "--dry-run",
@@ -174,6 +190,8 @@ async def cmd_parse(args: argparse.Namespace) -> None:
             download_direct=not args.catalog_only,
             download_torrents=not args.catalog_only and not args.no_bt,
             dry_run=args.dry_run,
+            http_concurrency=args.http_concurrency,
+            bt_concurrency=args.bt_concurrency,
         )
 
 
@@ -218,6 +236,8 @@ async def cmd_menu() -> None:
             no_previews=False,
             catalog_only=False,
             no_bt=False,
+            http_concurrency=DEFAULT_HTTP_CONCURRENCY,
+            bt_concurrency=DEFAULT_BT_CONCURRENCY,
             dry_run=False,
         )
         await cmd_parse(args)

@@ -3,10 +3,16 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from tqdm import tqdm
+
+# Default per-torrent wall-clock cap so a stalled magnet cannot hang forever.
+DEFAULT_TIMEOUT_SEC = 30 * 60
+# How many times to retry the whole engine chain (aria2 -> libtorrent) per source.
+DEFAULT_ATTEMPTS = 2
 
 
 class TorrentError(RuntimeError):
@@ -25,6 +31,41 @@ def _find_aria2() -> str | None:
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+def _has_libtorrent() -> bool:
+    try:
+        import libtorrent  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def bt_engine_available() -> bool:
+    """True when at least one torrent engine (aria2 or libtorrent) is usable."""
+    return _find_aria2() is not None or _has_libtorrent()
+
+
+def aria2_install_hint() -> str:
+    """Return a short, platform-specific guide for installing a torrent engine."""
+    if sys.platform.startswith("win"):
+        steps = (
+            "  - Download aria2 from https://github.com/aria2/aria2/releases\n"
+            "  - Put aria2c.exe on PATH, or at C:\\aria2\\aria2c.exe\n"
+            "  - Alternatively: pip install libtorrent (often fails on Windows)"
+        )
+    elif sys.platform == "darwin":
+        steps = (
+            "  - brew install aria2\n"
+            "  - Alternatively: pip install libtorrent"
+        )
+    else:
+        steps = (
+            "  - Debian/Ubuntu: sudo apt-get install -y aria2\n"
+            "  - Fedora: sudo dnf install -y aria2\n"
+            "  - Alternatively: pip install libtorrent"
+        )
+    return "To download magnet/.torrent links, install a torrent engine:\n" + steps
 
 
 def download_via_aria2(source: str, dest_dir: Path, timeout_sec: int = 0) -> Path:
@@ -119,22 +160,43 @@ def _add_magnet(session: object, lt: object, uri: str, dest_dir: Path):
     return session.add_torrent({"url": uri, "save_path": str(dest_dir)})
 
 
-def download_torrent_sync(source: str, dest_dir: Path, timeout_sec: int = 0) -> Path:
+def download_torrent_sync(
+    source: str,
+    dest_dir: Path,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    attempts: int = DEFAULT_ATTEMPTS,
+) -> Path:
+    if not bt_engine_available():
+        raise TorrentError("No torrent engine available.\n" + aria2_install_hint())
+
     errors: list[str] = []
-    if _find_aria2():
+    for attempt in range(1, max(1, attempts) + 1):
+        if _find_aria2():
+            try:
+                return download_via_aria2(source, dest_dir, timeout_sec=timeout_sec)
+            except Exception as exc:
+                errors.append(f"attempt{attempt} aria2: {exc}")
         try:
-            return download_via_aria2(source, dest_dir, timeout_sec=timeout_sec)
+            return download_via_libtorrent(source, dest_dir, timeout_sec=timeout_sec)
         except Exception as exc:
-            errors.append(f"aria2: {exc}")
-    try:
-        return download_via_libtorrent(source, dest_dir, timeout_sec=timeout_sec)
-    except Exception as exc:
-        errors.append(f"libtorrent: {exc}")
+            errors.append(f"attempt{attempt} libtorrent: {exc}")
+        if attempt < attempts:
+            print(f"[bt] attempt {attempt} failed, retrying...")
+
     raise TorrentError(
-        "Cannot start torrent. Install aria2 (aria2c in PATH) or: pip install libtorrent. "
+        f"Torrent failed after {attempts} attempt(s). "
         + " | ".join(errors)
+        + "\n"
+        + aria2_install_hint()
     )
 
 
-async def download_torrent(source: str, dest_dir: Path, timeout_sec: int = 0) -> Path:
-    return await asyncio.to_thread(download_torrent_sync, source, dest_dir, timeout_sec)
+async def download_torrent(
+    source: str,
+    dest_dir: Path,
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+    attempts: int = DEFAULT_ATTEMPTS,
+) -> Path:
+    return await asyncio.to_thread(
+        download_torrent_sync, source, dest_dir, timeout_sec, attempts
+    )

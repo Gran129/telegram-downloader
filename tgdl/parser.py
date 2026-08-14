@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import Counter
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from telethon.tl.types import (
     MessageMediaWebPage,
 )
 
+from tgdl.concurrency import guarded, run_jobs
 from tgdl.downloader import (
     ALL_TYPES,
     DownloadStats,
@@ -25,7 +27,10 @@ from tgdl.downloader import (
 )
 from tgdl.http_fetch import USER_AGENT, download_http_asset
 from tgdl.links import ParsedLink, classify_url, extract_raw_urls
-from tgdl.torrent_fetch import download_torrent
+from tgdl.torrent_fetch import aria2_install_hint, bt_engine_available, download_torrent
+
+DEFAULT_HTTP_CONCURRENCY = 3
+DEFAULT_BT_CONCURRENCY = 1
 
 
 @dataclass
@@ -65,11 +70,15 @@ def urls_from_message(message: Message) -> list[str]:
     return unique
 
 
-def write_catalog(path: Path, rows: list[dict[str, object]]) -> None:
+def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def write_catalog(path: Path, rows: list[dict[str, object]]) -> None:
+    write_jsonl(path, rows)
 
     md_path = path.with_suffix(".md")
     grouped: dict[str, list[dict[str, object]]] = {}
@@ -98,6 +107,8 @@ async def parse_channel(
     download_direct: bool = True,
     download_torrents: bool = True,
     dry_run: bool = False,
+    http_concurrency: int = DEFAULT_HTTP_CONCURRENCY,
+    bt_concurrency: int = DEFAULT_BT_CONCURRENCY,
 ) -> ParserStats:
     entity = await resolve_channel(client, target)
     title = getattr(entity, "title", None) or getattr(entity, "username", None) or str(entity.id)
@@ -107,16 +118,68 @@ async def parse_channel(
     direct_dir = folder / "parsed" / "direct"
     torrent_dir = folder / "parsed" / "torrents"
     catalog_path = folder / "parsed" / "links.jsonl"
+    failures_path = folder / "parsed" / "failures.jsonl"
 
     print("[parser-bot] scanning messages for links + Telegram previews")
     print(f"Channel: {title}")
     print(f"Save to: {folder / 'parsed'}")
+    if not dry_run and download_torrents and not bt_engine_available():
+        print("[parser-bot] WARNING: no torrent engine found; magnet/.torrent links "
+              "will be catalogued but not downloaded.")
+        print(aria2_install_hint())
+    if not dry_run:
+        print(f"[parser-bot] concurrency: http={http_concurrency} bt={bt_concurrency}")
 
     stats = ParserStats()
     rows: list[dict[str, object]] = []
+    failures: list[dict[str, object]] = []
     preview_stats = DownloadStats()
 
+    http_sem = asyncio.Semaphore(max(1, http_concurrency))
+    bt_sem = asyncio.Semaphore(max(1, bt_concurrency))
+    jobs: list[asyncio.Task] = []
+
     async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
+
+        async def http_job(row: dict[str, object], url: str, basename: str) -> None:
+            try:
+                kind, saved = await guarded(
+                    http_sem,
+                    lambda: download_http_asset(session, url, direct_dir, torrent_dir, basename),
+                )
+                if kind == "media" and saved is not None:
+                    row["downloaded"] = True
+                    row["file"] = str(saved)
+                    row["category"] = "direct-media"
+                    stats.direct += 1
+                elif kind == "torrent" and saved is not None:
+                    row["torrent_file"] = str(saved)
+                    if download_torrents:
+                        out = await guarded(
+                            bt_sem,
+                            lambda: download_torrent(str(saved), torrent_dir / basename),
+                        )
+                        row["downloaded"] = True
+                        row["file"] = str(out)
+                        stats.torrents += 1
+            except Exception as exc:
+                stats.failed += 1
+                row["error"] = str(exc)
+                failures.append(row)
+
+        async def magnet_job(row: dict[str, object], url: str, basename: str) -> None:
+            try:
+                out = await guarded(
+                    bt_sem, lambda: download_torrent(url, torrent_dir / basename)
+                )
+                row["downloaded"] = True
+                row["file"] = str(out)
+                stats.torrents += 1
+            except Exception as exc:
+                stats.failed += 1
+                row["error"] = str(exc)
+                failures.append(row)
+
         async for message in client.iter_messages(entity, offset_date=until):
             if limit is not None and stats.messages >= limit:
                 break
@@ -144,6 +207,7 @@ async def parse_channel(
                     print(f"{base}  preview/{kind}  {(message.raw_text or '')[:50]}")
                     stats.previews += 1
                 else:
+                    # Telegram-side downloads stay sequential to avoid FloodWait.
                     dest = preview_photos if kind == "photo" else preview_videos
                     dest.mkdir(parents=True, exist_ok=True)
                     try:
@@ -163,6 +227,7 @@ async def parse_channel(
                         print(f"preview failed {message.id}: {exc}")
 
             snippet = (message.raw_text or "").replace("\n", " ")[:180]
+            basename = f"{msg_date.strftime('%Y%m%d')}_{message.id}"
             for url in urls:
                 parsed = classify_url(url)
                 stats.links += 1
@@ -177,68 +242,35 @@ async def parse_channel(
                     "text": snippet,
                     "downloaded": False,
                 }
+                rows.append(row)
+                stats.catalogued += 1
 
                 if dry_run:
                     print(f"{message.id}  {parsed.category:<13}  {parsed.url}")
-                    stats.catalogued += 1
-                    rows.append(row)
                     continue
 
                 if parsed.category in {"direct-media", "webpage", "torrent"} and download_direct:
-                    try:
-                        kind, saved = await download_http_asset(
-                            session,
-                            parsed.url,
-                            direct_dir,
-                            torrent_dir,
-                            f"{msg_date.strftime('%Y%m%d')}_{message.id}",
-                        )
-                        if kind == "media" and saved is not None:
-                            row["downloaded"] = True
-                            row["file"] = str(saved)
-                            row["category"] = "direct-media"
-                            stats.direct += 1
-                        elif kind == "torrent" and saved is not None:
-                            row["torrent_file"] = str(saved)
-                            if download_torrents:
-                                out = await download_torrent(
-                                    str(saved),
-                                    torrent_dir / f"{msg_date.strftime('%Y%m%d')}_{message.id}",
-                                )
-                                row["downloaded"] = True
-                                row["file"] = str(out)
-                                stats.torrents += 1
-                    except Exception as exc:
-                        stats.failed += 1
-                        row["error"] = str(exc)
-
+                    jobs.append(asyncio.create_task(http_job(row, parsed.url, basename)))
                 elif parsed.category == "magnet" and download_torrents:
-                    try:
-                        out = await download_torrent(
-                            parsed.url,
-                            torrent_dir / f"{msg_date.strftime('%Y%m%d')}_{message.id}",
-                        )
-                        row["downloaded"] = True
-                        row["file"] = str(out)
-                        stats.torrents += 1
-                    except Exception as exc:
-                        stats.failed += 1
-                        row["error"] = str(exc)
-
+                    jobs.append(asyncio.create_task(magnet_job(row, parsed.url, basename)))
                 elif parsed.category == "telegram":
+                    # Telegram-side fetch stays sequential (shared client / FloodWait).
                     extra = await _try_telegram_post(client, parsed, folder, msg_date, message.id)
                     if extra:
                         row["downloaded"] = True
                         row["file"] = extra
                         stats.telegram_posts += 1
 
-                rows.append(row)
-                stats.catalogued += 1
+        # Wait for all bounded HTTP/BT download jobs to finish before summarising.
+        await run_jobs(jobs)
 
     if not dry_run:
         write_catalog(catalog_path, rows)
         print(f"[parser-bot] catalog: {catalog_path}")
         print(f"[parser-bot] markdown: {catalog_path.with_suffix('.md')}")
+        if failures:
+            write_jsonl(failures_path, failures)
+            print(f"[parser-bot] failures: {failures_path} ({len(failures)})")
 
     print(
         "[parser-bot] "
