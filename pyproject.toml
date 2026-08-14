@@ -1,30 +1,14 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "telegram-downloader"
-version = "0.1.0"
-description = "Download media (photos, videos, documents) from Telegram chats and channels."
-readme = "README.md"
+name = "tgdl"
+version = "1.0.0"
+description = "Download photos and videos from Telegram channels you already joined."
 requires-python = ">=3.10"
-license = { text = "MIT" }
 dependencies = [
-    "telethon>=1.36,<2",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.23",
+  "telethon>=1.37.0",
+  "python-dotenv>=1.0.1",
+  "tqdm>=4.66.0",
+  "aiohttp>=3.9.0",
 ]
 
 [project.scripts]
-telegram-downloader = "telegram_downloader.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
+tgdl = "tgdl.cli:main"

@@ -1,19 +1,13 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
+.env
 .venv/
 venv/
-
-# Test / tooling
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Project
-downloads/
+__pycache__/
+*.py[cod]
 *.session
-.env
+*.session-journal
+downloads/
+dist/
+build/
+*.egg-info/
+.idea/
+.vscode/
