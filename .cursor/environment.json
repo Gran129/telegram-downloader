@@ -1,4 +1,4 @@
 {
   "name": "telegram-downloader",
-  "install": "pip3 install --break-system-packages -r requirements-dev.txt && pip3 install --break-system-packages -e ."
+  "install": "if [ -f requirements-dev.txt ]; then pip3 install --break-system-packages -r requirements-dev.txt; fi; if [ -f pyproject.toml ]; then pip3 install --break-system-packages -e .; fi"
 }
